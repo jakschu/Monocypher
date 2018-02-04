@@ -1,121 +1,121 @@
-# compile with any of the following
 CC=gcc -std=gnu99 # speed tests don't work with -std=cxx, they need the POSIX extensions
-#CC=gcc -std=c99
-#CC=gcc -std=c11
-#CC=g++ -std=c++98
-#CC=g++ -std=c++11
-#CC=g++ -std=c++14
-#CC=g++ -std=c++17
-#CC=clang -std=c99
-#CC=clang -std=c11
-#CC=clang++ -std=c++98
-#CC=clang++ -std=c++11
-#CC=clang++ -std=c++14
+CFLAGS= -pedantic -Wall -Wextra -O3 -march=native
+DESTDIR=
+PREFIX=usr/local
+PKGCONFIG=$(DESTDIR)/$(PREFIX)/lib/pkgconfig
+MAN_DIR=$(DESTDIR)/$(PREFIX)/share/man/man3
 
-# These may be used for tests (except speed)
-#CC = clang -std=c99 -fsanitize=address
-#CC = clang -std=c99 -fsanitize=memory
-#CC = clang -std=c99 -fsanitize=undefined
-#CC = clang -std=c99 -fprofile-instr-generate -fcoverage-mapping
+# override with x.y.z when making a proper tarball
+TARBALL_VERSION=master
+# avoids changing the current directory while we archive it
+TARBALL_DIR=..
 
-CFLAGS= -I src -pedantic -Wall -Wextra -O3 -march=native
+.PHONY: all library static-library dynamic-library \
+        install install-doc                        \
+        check test speed                           \
+        clean uninstall                            \
+        tarball
 
-.PHONY: all clean directories
-# disable implicit rules
-.SUFFIXES:
+all    : library
+install: library src/monocypher.h install-doc
+	mkdir -p $(DESTDIR)/$(PREFIX)/include
+	mkdir -p $(DESTDIR)/$(PREFIX)/lib
+	mkdir -p $(PKGCONFIG)
+	cp lib/libmonocypher.a lib/libmonocypher.so $(DESTDIR)/$(PREFIX)/lib
+	cp src/monocypher.h $(DESTDIR)/$(PREFIX)/include
+	@echo "Creating $(PKGCONFIG)/monocypher.pc"
+	@echo "prefix=/$(PREFIX)"                > $(PKGCONFIG)/monocypher.pc
+	@echo 'exec_prefix=$${prefix}'          >> $(PKGCONFIG)/monocypher.pc
+	@echo 'libdir=$${exec_prefix}/lib'      >> $(PKGCONFIG)/monocypher.pc
+	@echo 'includedir=$${prefix}/include'   >> $(PKGCONFIG)/monocypher.pc
+	@echo ''                                >> $(PKGCONFIG)/monocypher.pc
+	@echo 'Name: monocypher'                >> $(PKGCONFIG)/monocypher.pc
+	@echo 'Version: 1.1.0'                  >> $(PKGCONFIG)/monocypher.pc
+	@echo 'Description: Easy to use, easy to deploy crypto library' \
+                                                >> $(PKGCONFIG)/monocypher.pc
+	@echo ''                                >> $(PKGCONFIG)/monocypher.pc
+	@echo 'Libs: -L$${libdir} -lmonocypher' >> $(PKGCONFIG)/monocypher.pc
+	@echo 'Cflags: -I$${includedir}'        >> $(PKGCONFIG)/monocypher.pc
 
-all: self sodium donna
+install-doc:
+	mkdir -p $(MAN_DIR)
+	cp -r doc/man/man3/*.3monocypher $(MAN_DIR)
+
+library: static-library dynamic-library
+static-library : lib/libmonocypher.a
+dynamic-library: lib/libmonocypher.so
 
 clean:
-	rm -rf bin formal-analysis
-	rm -f src/*.gch src/rename_*
-	rm -f self sodium donna speed
+	rm -rf lib/
+	rm -f  *.out
 
-TEST_DEPS=tests/self.c bin/monocypher.o bin/sha512.o
-GEN_HEADERS=bin/argon2i.h      \
-            bin/blake2b.h      \
-            bin/blake2b_easy.h \
-            bin/chacha20.h     \
-            bin/ed25519_key.h  \
-            bin/ed25519_sign.h \
-            bin/h_chacha20.h   \
-            bin/key_exchange.h \
-            bin/poly1305.h     \
-            bin/v_sha512.h     \
-            bin/x25519.h       \
-            bin/x_chacha20.h
+uninstall:
+	rm -f $(DESTDIR)/$(PREFIX)/lib/libmonocypher.a
+	rm -f $(DESTDIR)/$(PREFIX)/lib/libmonocypher.so
+	rm -f $(DESTDIR)/$(PREFIX)/include/monocypher.h
+	rm -f $(PKGCONFIG)/monocypher.pc
+	rm -f $(MAN_DIR)/*.3monocypher
 
-# self containted test suite (vectors and properties)
-self: $(TEST_DEPS) $(GEN_HEADERS)
-	$(CC) $(CFLAGS) -I bin -o $@ $(TEST_DEPS)
+check: test
+test: test.out
+	./test.out
 
-bin/vector: tests/vector_to_header.c
+speed: speed.out
+	./speed.out
+
+speed-sodium: speed-sodium.out
+	./speed-sodium.out
+
+# Monocypher libraries
+lib/libmonocypher.a: lib/monocypher.o
+	ar cr $@ $^
+lib/libmonocypher.so: lib/monocypher.o
 	@mkdir -p $(@D)
-	$(CC) $(CFLAGS) -o $@ $^
-
-bin/%.h: tests/vectors/% bin/vector
-	@echo generate $@
-	@bin/vector $$(basename $<) <$< >$@
-
-# Test suite based on comparison with libsodium
-C_SODIUM_FLAGS=$$(pkg-config --cflags libsodium)
-LD_SODIUM_FLAGS=$$(pkg-config --libs libsodium)
-sodium: tests/sodium.c bin/rename_monocypher.o bin/rename_sha512.o
-	$(CC) $(CFLAGS) -o $@ $^ $(C_SODIUM_FLAGS) $(LD_SODIUM_FLAGS)
-
-# Speed benchmark
-speed: tests/speed.c bin/rename_monocypher.o bin/rename_sha512.o bin/tweetnacl.o
-	$(CC) $(CFLAGS) -o $@ $^ $(C_SODIUM_FLAGS) $(LD_SODIUM_FLAGS)
-
-bin/tweetnacl.o: tests/tweetnacl/tweetnacl.c tests/tweetnacl/tweetnacl.h
-	$(CC) $(CFLAGS) -o $@ -c $<
-
-# Test edDSA/blake2b by comparing with the donna implementation
-# Note: we're using Blake2b, the default hash for monocypher edDSA
-donna: tests/donna.c bin/classic_monocypher.o bin/donna.o
-	$(CC) $(CFLAGS) -o $@ $^ -I tests/ed25519-donna
-bin/classic_monocypher.o: src/monocypher.c src/monocypher.h
+	$(CC) $(CFLAGS) -shared -o $@ $^
+lib/sha512.o    : src/optional/sha512.c src/optional/sha512.o
+lib/monocypher.o: src/monocypher.c src/monocypher.h
+lib/monocypher.o lib/sha512.o:
 	@mkdir -p $(@D)
-	$(CC) $(CFLAGS) -o $@ -c $<
-bin/donna.o: tests/ed25519-donna/ed25519.c
-	@mkdir -p $(@D)
-	$(CC) $(CFLAGS) -o $@ -c $< -DED25519_CUSTOMHASH -DED25519_TEST -DED25519_NO_INLINE_ASM -DED25519_FORCE_32BIT
+	$(CC) $(CFLAGS) -I src -I src/optional -fPIC -c -o $@ $<
 
-# compile monocypher
-# use -DED25519_SHA512 for ed25519 compatibility
-bin/rename_monocypher.o: src/rename_monocypher.c src/rename_monocypher.h src/rename_sha512.h
+# Test & speed libraries
+$TEST_COMMON=tests/utils.h src/monocypher.h src/optional/sha512.h
+lib/test.o        : tests/test.c         $(TEST_COMMON) tests/vectors.h
+lib/speed.o       : tests/speed.c        $(TEST_COMMON) tests/speed.h
+lib/speed-sodium.o: tests/speed-sodium.c $(TEST_COMMON) tests/speed.h
+lib/utils.o lib/test.o lib/speed.o lib/speed-sodium.o:
 	@mkdir -p $(@D)
-	$(CC) $(CFLAGS) -o $@ -c $< -DED25519_SHA512
-bin/monocypher.o: src/monocypher.c src/monocypher.h src/sha512.h
-	@mkdir -p $(@D)
-	$(CC) $(CFLAGS) -o $@ -c $< -DED25519_SHA512
+	$(CC) $(CFLAGS) -I src -I src/optional -fPIC -c -o $@ $<
 
-# compile sha512.  Only used for ed15519 compatibility
-bin/sha512.o: src/sha512.c src/sha512.h
-	@mkdir -p $(@D)
-	$(CC) $(CFLAGS) -o $@ -c $<
-bin/rename_sha512.o: src/rename_sha512.c src/rename_sha512.h
-	@mkdir -p $(@D)
-	$(CC) $(CFLAGS) -o $@ -c $<
+# test & speed executables
+test.out : lib/test.o  lib/monocypher.o lib/sha512.o
+speed.out: lib/speed.o lib/monocypher.o lib/sha512.o
+test.out speed.out:
+	$(CC) $(CFLAGS) -I src -I src/optional -o $@ $^
+speed-sodium.out: lib/speed-sodium.o
+	$(CC) $(CFLAGS) -I src -I src/optional -o $@ $^ \
+            $$(pkg-config --cflags libsodium)           \
+            $$(pkg-config --libs   libsodium)
 
-# change the "crypto_" prefix to the "rename_" prefix, so you can use
-# monocypher with other crypto libraries without conflict.
-rename_%.c: %.c
-	sed 's/crypto_/rename_/g'                 <$^  >$@1
-	sed 's/monocypher.h/rename_monocypher.h/' <$@1 >$@2
-	sed 's/sha512.h/rename_sha512.h/'         <$@2 >$@
-rename_%.h: %.h
-	sed 's/crypto_/rename_/g'                 <$^  >$@1
-	sed 's/monocypher.h/rename_monocypher.h/' <$@1 >$@2
-	sed 's/sha512.h/rename_sha512.h/'         <$@2 >$@
+tests/vectors.h:
+	@echo ""
+	@echo "======================================================"
+	@echo " I cannot perform the tests without the test vectors."
+	@echo " You must generate them.  This requires Libsodium."
+	@echo " The fowlowing will generate the test vectors:"
+	@echo ""
+	@echo "     $ cd tests/gen"
+	@echo "     $ make"
+	@echo ""
+	@echo " Alternatively, you can grab an official release."
+	@echo " It will include the test vectors, so you won't"
+	@echo " need libsodium"
+	@echo "======================================================"
+	@echo ""
+	return 1
 
-formal-analysis: $(GEN_HEADERS)                    \
-         src/monocypher.c src/monocypher.h \
-         src/sha512.c src/sha512.h         \
-         tests/self.c
-	@echo "copy sources to formal-analysis directory for analysis (frama-c or TIS)"
-	@mkdir -p formal-analysis
-	@cp $^ formal-analysis
-	@echo "add #define ED25519_SHA512 on top of monocypher.c (for ed25519)"
-	@echo "#define ED25519_SHA512" > formal-analysis/tmp
-	@cat formal-analysis/tmp src/monocypher.c > formal-analysis/monocypher.c
+tarball: tests/vectors.h
+	doc/man2html.sh
+	tar -czvf $(TARBALL_DIR)/monocypher-$(TARBALL_VERSION).tar.gz \
+            -X tarball_ignore                                         \
+            --transform='flags=r;s|^.|monocypher-$(TARBALL_VERSION)|' .
